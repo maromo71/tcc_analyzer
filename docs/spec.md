@@ -13,13 +13,16 @@ O aplicativo permite a leitura e navegação do PDF diretamente na ferramenta, s
 - **Leitura e Processamento de PDF:** PyMuPDF (`fitz`)
 - **Banco de Dados:** SQLite (`sqlite3`)
 - **Geração de Relatórios:** python-docx (`docx`)
+- **Análise de Dados e Exportação:** pandas (`pd`), openpyxl (exportação para `.xlsx`)
 
 ---
 
 ## 3. Arquitetura do Sistema
-O projeto é dividido em dois arquivos principais:
+O projeto é dividido em arquivos e módulos principais:
 - `main.py`: Contém toda a lógica de Interface de Usuário (UI), componentes PyQt6 (Dialogs, MainWindow), o visualizador de PDF (QGraphicsView customizado) e as integrações de eventos.
 - `database.py`: Módulo responsável pela interação com o banco de dados SQLite (`tcc_assistant.db`), provendo um modelo CRUD (Create, Read, Update, Delete) para Projetos e Anotações.
+- `validador_citacoes.py`: Módulo autônomo (CLI) responsável pela extração das referências e validação de citações no formato ABNT com base no texto do PDF, com relatórios em planilhas.
+- `iniciar_tcc_analizer.bat`: Script em lote do Windows usado para inicializar rapidamente a aplicação.
 
 ### Modelo de Dados
 O banco de dados possui duas tabelas:
@@ -67,6 +70,13 @@ A área de trabalho é dividida em duas colunas (usando `QSplitter`), priorizand
     - O PDF é gerado nativamente pelo `QPdfWriter` do PyQt6 (sem necessidade de conversores externos).
     - O documento final inclui uma seção de rodapé com o nome do avaliador escrito em uma **fonte cursiva**, servindo como uma assinatura digital.
   - **Salvar Rascunho e Sair:** Retorna o usuário para o Dashboard principal.
+
+### 4.3. Validação Automática de Citações (CLI)
+Através do script autônomo `validador_citacoes.py`, o projeto oferece uma ferramenta complementar (via linha de comando) para automatizar a verificação das normas ABNT no texto do PDF:
+- **Extração de Referências:** Identifica automaticamente a seção de "REFERÊNCIAS BIBLIOGRÁFICAS" no final do PDF e isola cada entrada bibliográfica.
+- **Identificação de Citações:** Utiliza expressões regulares (RegEx) para localizar citações no formato ABNT ao longo do texto (ex: `(AUTOR, 2023)` ou `Autor (2023)`), filtrando menções a "próprio autor".
+- **Cruzamento e Verificação:** Relaciona as citações mapeadas ao longo do documento com a lista de referências ao final.
+- **Relatório Detalhado:** Identifica citações sem referência ("Falta na Bibliografia"), citações corretas ("OK"), e referências presentes no final mas não citadas no texto ("Sobrando"). Exporta todos os resultados com o contexto do parágrafo e página para um arquivo Excel (`.xlsx`) ou `.csv`.
 
 ---
 
