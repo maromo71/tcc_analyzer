@@ -19,7 +19,7 @@ O programa permite carregar um PDF do TCC, extrair trechos facilmente com o mous
 Você precisará do **Python 3.9+** instalado na sua máquina.
 
 1. **Clone ou baixe o repositório** para a sua máquina.
-2. **Abra um terminal** (Prompt de Comando, PowerShell ou Terminal do Linux/Mac) na pasta raiz do projeto (`c:\tcc_analizer` por exemplo).
+2. **Abra um terminal** (Prompt de Comando, PowerShell ou Terminal do Linux/Mac) na pasta raiz do projeto (`c:\tcc_analyzer` por exemplo).
 3. **Crie um ambiente virtual (Opcional, mas recomendado)**:
    ```bash
    python -m venv venv
