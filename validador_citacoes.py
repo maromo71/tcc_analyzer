@@ -3,6 +3,7 @@ import re
 import pandas as pd
 import argparse
 import os
+import difflib
 
 def extract_text_from_pdf(pdf_path):
     print(f"Lendo PDF: {pdf_path}")
@@ -18,14 +19,34 @@ def find_references_section(pages):
     ref_start_page = -1
     match_obj = None
     
-    # Busca de trás para frente para evitar pegar o Sumário
-    for i in range(len(pages)-1, -1, -1):
+    # 1. Busca linha que inicie com REFERÊNCIAS de trás para frente (evita Sumário)
+    pattern_strict = re.compile(
+        r'^\s*(?:\d+[\.\s]*)?REFER[ÊE]NCIAS(?:\s+BIBLIOGR[ÁA]FICAS)?\b.*$',
+        re.MULTILINE | re.IGNORECASE
+    )
+    
+    for i in range(len(pages) - 1, -1, -1):
         page_text = pages[i]
-        match = re.search(r'^\s*REFER[ÊE]NCIAS(?:\s+BIBLIOGR[ÁA]FICAS)?\s*$', page_text, re.MULTILINE | re.IGNORECASE)
+        match = pattern_strict.search(page_text)
         if match:
             ref_start_page = i
             match_obj = match
             break
+
+    # 2. Fallback: Se não encontrou linha exata, busca nas últimas 30% páginas por "REFERÊNCIAS" isolado
+    if ref_start_page == -1:
+        start_search_idx = max(0, int(len(pages) * 0.7))
+        pattern_fallback = re.compile(
+            r'\bREFER[ÊE]NCIAS(?:\s+BIBLIOGR[ÁA]FICAS)?\b',
+            re.IGNORECASE
+        )
+        for i in range(len(pages) - 1, start_search_idx - 1, -1):
+            page_text = pages[i]
+            match = pattern_fallback.search(page_text)
+            if match:
+                ref_start_page = i
+                match_obj = match
+                break
             
     if ref_start_page != -1:
         for i in range(ref_start_page):
@@ -39,7 +60,11 @@ def find_references_section(pages):
             ref_text += pages[i] + "\n"
             
         # Ignora tudo que vier após ANEXO ou APÊNDICE
-        end_match = re.search(r'^\s*(ANEXO|APÊNDICE|APENDICE)S?\b.*$', ref_text, re.MULTILINE | re.IGNORECASE)
+        end_match = re.search(
+            r'^\s*(?:\d+[\.\s]*)?(ANEXO|APÊNDICE|APENDICE)S?\b.*$',
+            ref_text,
+            re.MULTILINE | re.IGNORECASE
+        )
         if end_match:
             ref_text = ref_text[:end_match.start()]
     else:
@@ -49,36 +74,59 @@ def find_references_section(pages):
     return body_pages, ref_text
 
 def parse_references(ref_text):
-    # Separa por linhas duplas ou parágrafos
+    if not ref_text.strip():
+        return []
+        
+    # Tenta separar por linhas duplas / parágrafos
     raw_refs = re.split(r'\n\s*\n', ref_text)
     refs = []
     for r in raw_refs:
         r = r.strip().replace('\n', ' ')
-        if len(r) > 15: # Filtra ruídos
+        if len(r) > 15:
             refs.append(r)
+            
+    # Se gerou pouquíssimas referências muito longas, usa fallback dividindo por padrão ABNT de autor
+    if len(refs) <= 2 and len(ref_text) > 300:
+        abnt_split = re.split(r'\n(?=[A-ZÁÉÍÓÚÂÊÔÃÕÇ]{2,}(?:[,\s]|\s+[A-ZÀ-Ú]))', ref_text)
+        refs = []
+        for r in abnt_split:
+            r = r.strip().replace('\n', ' ')
+            if len(r) > 15:
+                refs.append(r)
+
     return refs
 
 def find_citations_in_body(body_pages):
     citations = []
-    # Padrão 1: (AUTOR, Ano) ou (AUTOR; AUTOR, Ano) ou (AUTOR et al., Ano)
-    pattern1 = re.compile(r'\(([A-ZÀ-Úa-z\s]+(?:;\s*[A-ZÀ-Úa-z\s]+)*)(?:\s+et\s+al\.)?(?:.+?)?,\s*(\d{4})(?:.*?)\)')
     
-    # Padrão 2: Autor (Ano) ou Autor et al. (Ano)
-    pattern2 = re.compile(r'([A-Z][a-zÀ-ú]+(?:\s+e\s+[A-Z][a-zÀ-ú]+|\s+et\s+al\.)?)\s+\((\d{4})(?:.*?)\)')
+    # Citações entre parênteses: (AUTOR, 2020), (AUTOR 1; AUTOR 2, 2020), (SILBERCHATZ, KORTH E SUDARSHAN, 2006)
+    pattern_paren = re.compile(
+        r'\(\s*([A-ZÁÉÍÓÚÂÊÔÃÕÇ\s,;&\-]+?)(?:\s+et\s+al\.)?\s*,\s*(\d{4})[a-z]?(?:\s*,\s*p\.\s*\d+|\s*,\s*\d+|\s*:\s*\d+)?\s*\)'
+    )
+    
+    # Citações no texto: Autor (2020), Booch, Rumbaugh e Jacobson (2005), Pádua Filho (2003)
+    pattern_text = re.compile(
+        r'\b([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-zà-úâêôãõç]+(?:\s+(?:Filho|Neto|Júnior|Sobrinho))?'
+        r'(?:\s*,\s*[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-zà-úâêôãõç]+(?:\s+(?:Filho|Neto|Júnior|Sobrinho))?)*'
+        r'(?:\s+e\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-zà-úâêôãõç]+(?:\s+(?:Filho|Neto|Júnior|Sobrinho))?|\s+et\s+al\.)?)'
+        r'\s*\(\s*(\d{4})[a-z]?(?::\s*\d+|,\s*p\.\s*\d+|\s+p\.\s*\d+)?\s*\)'
+    )
+    
+    ignorar = [
+        "AUTOR", "AUTORES", "AUTORAL", "O AUTOR", "OS AUTORES", "A AUTORA", "AS AUTORAS",
+        "PRÓPRIO AUTOR", "PRÓPRIOS AUTORES", "PRÓPRIA AUTORA", "PRÓPRIAS AUTORAS",
+        "DO AUTOR", "DOS AUTORES", "DA AUTORA", "DAS AUTORAS",
+        "ELABORADO PELO AUTOR", "ELABORADA PELO AUTOR", "FONTE"
+    ]
     
     for page_num, text in enumerate(body_pages, start=1):
-        # Encontra padrão 1
-        for match in pattern1.finditer(text):
+        # 1. Citações parentéticas
+        for match in pattern_paren.finditer(text):
             autor = match.group(1).strip()
-            
-            # Ignora citações de autoria própria para imagens e tabelas
-            ignorar = ["AUTOR", "AUTORES", "AUTORAL", "O AUTOR", "OS AUTORES", "A AUTORA", "AS AUTORAS", "PRÓPRIO AUTOR", "PRÓPRIOS AUTORES", "PRÓPRIA AUTORA", "PRÓPRIAS AUTORAS", "DO AUTOR", "DOS AUTORES", "DA AUTORA", "DAS AUTORAS"]
             if autor.upper() in ignorar:
                 continue
                 
             ano = match.group(2).strip()
-            
-            # Pega um trecho ao redor para contexto
             start = max(0, match.start() - 50)
             end = min(len(text), match.end() + 50)
             contexto = text[start:end].replace('\n', ' ')
@@ -92,17 +140,13 @@ def find_citations_in_body(body_pages):
                 'citacao_completa': match.group(0)
             })
             
-        # Encontra padrão 2
-        for match in pattern2.finditer(text):
+        # 2. Citações no texto
+        for match in pattern_text.finditer(text):
             autor = match.group(1).strip()
-            
-            # Ignora citações de autoria própria
-            ignorar = ["AUTOR", "AUTORES", "AUTORAL", "O AUTOR", "OS AUTORES", "A AUTORA", "AS AUTORAS", "PRÓPRIO AUTOR", "PRÓPRIOS AUTORES", "PRÓPRIA AUTORA", "PRÓPRIAS AUTORAS", "DO AUTOR", "DOS AUTORES", "DA AUTORA", "DAS AUTORAS"]
             if autor.upper() in ignorar:
                 continue
                 
             ano = match.group(2).strip()
-            
             start = max(0, match.start() - 50)
             end = min(len(text), match.end() + 50)
             contexto = text[start:end].replace('\n', ' ')
@@ -118,35 +162,71 @@ def find_citations_in_body(body_pages):
             
     return citations
 
+def extract_author_tokens(autor_str):
+    """Extrai os sobrenomes/tokens principais do autor citado."""
+    clean = re.sub(r'\b(e|et\s+al\.|and)\b', ' ', autor_str, flags=re.IGNORECASE)
+    parts = re.split(r'[;,\s]+', clean)
+    stop_words = {'filho', 'neto', 'junior', 'júnior', 'sobrinho', 'dos', 'das', 'del', 'von', 'van', 'der', 'de', 'da', 'do'}
+    tokens = [p.strip().upper() for p in parts if len(p.strip()) > 2 and p.strip().lower() not in stop_words]
+    return tokens
+
+def is_author_match(citation_author, ref_text):
+    ref_upper = ref_text.upper()
+    tokens = extract_author_tokens(citation_author)
+    if not tokens:
+        return False
+        
+    for token in tokens:
+        # Correspondência exata de substring
+        if token in ref_upper:
+            return True
+            
+        # Correspondência por similaridade (fuzzy) contra palavras da referência
+        ref_words = re.findall(r'[A-ZÀ-Ú]{3,}', ref_upper)
+        for w in ref_words:
+            ratio = difflib.SequenceMatcher(None, token, w).ratio()
+            if ratio >= 0.8:  # tolera pequenos erros de digitação como Silberchatz/Silberschatz, Pressman/Presmann
+                return True
+    return False
+
 def match_citations(citations, references):
     results = []
     used_refs = set()
     
     for cit in citations:
-        autor_key = cit['autor'].split(';')[0].split(',')[0].split(' ')[0].upper()
         ano_key = cit['ano']
-        
         found_ref = None
+        year_mismatch_ref = None
+        
+        # 1. Busca por correspondência de autor e ano exato
         for i, ref in enumerate(references):
-            if autor_key in ref.upper() and ano_key in ref:
-                found_ref = ref
-                used_refs.add(i)
-                break
+            if is_author_match(cit['autor'], ref):
+                if ano_key in ref:
+                    found_ref = ref
+                    used_refs.add(i)
+                    break
+                elif year_mismatch_ref is None:
+                    year_mismatch_ref = ref
                 
         if found_ref:
             status = '✅ OK'
+            ref_final = found_ref
+        elif year_mismatch_ref:
+            status = '⚠️ ANO DIVERGENTE'
+            ref_final = f"[Ano divergente em relação à ref]: {year_mismatch_ref}"
         else:
             status = '❌ FALTA NA BIBLIOGRAFIA'
+            ref_final = 'NÃO ENCONTRADA'
             
         results.append({
             'Status': status,
             'Citação Encontrada': cit['citacao_completa'],
             'Página': cit['pagina'],
             'Contexto': cit['contexto'],
-            'Referência Correspondente': found_ref if found_ref else 'NÃO ENCONTRADA'
+            'Referência Correspondente': ref_final
         })
         
-    # Identifica referências não utilizadas
+    # Identifica referências não utilizadas no corpo
     for i, ref in enumerate(references):
         if i not in used_refs:
             results.append({
@@ -171,7 +251,7 @@ def run_validation(pdf_path):
     body_pages, ref_text = find_references_section(pages)
     
     if not ref_text.strip():
-        print("Aviso: Seção de referências não encontrada automaticamente. Verifique se o título é exatamente 'REFERÊNCIAS BIBLIOGRÁFICAS'.")
+        print("Aviso: Seção de referências não encontrada automaticamente. Verifique o cabeçalho 'REFERÊNCIAS BIBLIOGRÁFICAS'.")
         
     print("Mapeando lista de referências...")
     references = parse_references(ref_text)
@@ -198,7 +278,6 @@ def main():
     print(f"Gerando relatório: {args.output}")
     df = pd.DataFrame(results)
     
-    # Salva em Excel se openpyxl estiver instalado, senão salva em CSV
     try:
         df.to_excel(args.output, index=False)
         print("Relatório Excel gerado com sucesso!")
@@ -209,3 +288,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
